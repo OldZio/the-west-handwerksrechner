@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         old Handwerksrechner
 // @namespace    thewest.handwerksrechner
-// @version      1.1.4
-// @description  Handwerksrechner mit 164 Produkten und Berufstotalen.
+// @version      1.2.0
+// @description  Handwerksrechner mit automatischem Rohmaterial-Inventarvergleich und Berufstotalen.
 // @author       old
 // @match        https://*.the-west.de/game.php*
 // @match        https://*.thewest.de/game.php*
@@ -10,6 +10,7 @@
 // @noframes
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        unsafeWindow
 // @grant        GM_registerMenuCommand
 // ==/UserScript==
 
@@ -355,11 +356,14 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 <select id="product"></select>
 </label>
 <p class="note" id="coverage"></p>
+<p id="inventory-status" class="note" role="status"></p>
+<button id="inventory-refresh" type="button">Inventar erneut prüfen</button>
 <p id="message" role="status"></p>
 <div id="results"></div>
-<footer>Version 1.1.4 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
+<footer>Version 1.2.0 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
 Niedrige Händler-Verkaufswerte, keine Marktpreise.
-Kein Zugriff auf Inventar oder Markt. Keine automatischen Spielaktionen.</footer>
+Liest Rohmaterialmengen aus dem Spielinventar. Kein Marktzugriff, kein Kauf und keine Herstellung.
+Inventarmengen werden weder dauerhaft gespeichert noch an Dritte gesendet.</footer>
 </main>
 </dialog>
 `;
@@ -384,6 +388,7 @@ function save(key,value) {
   try { GM_setValue(key,value); } catch {}
 }
 function open() {
+  update();
   if (!panel.open) panel.showModal();
   search.focus();
 }
@@ -478,6 +483,94 @@ function paragraph(text,className='') {
   const p = element('p',text,results);
   p.className = className;
 }
+// Inventory access uses the game's Bag API; no third-party requests.
+let inventoryLoadRequested = false;
+let inventoryLoadStarted = 0;
+let inventoryLoadError = false;
+let inventorySignature = '';
+const rawIds = Object.keys(items).filter(id => !recipes[id]);
+function inventorySnapshot() {
+  try {
+    const page = typeof unsafeWindow === 'undefined' ? window : unsafeWindow;
+    const bag = page.Bag;
+    if (!bag || typeof bag.getItemCount !== 'function') {
+      return {state:'unavailable',counts:{},
+        message:'Inventar noch nicht verfügbar. Bitte warten oder das Spielinventar einmal öffnen.'};
+    }
+    if (!bag.loaded) {
+      if (!inventoryLoadRequested && typeof bag.loadItems === 'function') {
+        inventoryLoadRequested = true;
+        inventoryLoadStarted = Date.now();
+        try {
+          const request = bag.loadItems();
+          if (request && typeof request.catch === 'function') {
+            request.catch(() => { inventoryLoadError = true; });
+          }
+        } catch { inventoryLoadError = true; }
+      }
+      const waiting = inventoryLoadRequested && !inventoryLoadError &&
+        Date.now()-inventoryLoadStarted < 15000;
+      return {state:waiting ? 'loading' : 'unavailable',counts:{},
+        message:waiting ? 'Inventar wird automatisch geladen …' :
+          'Inventar noch nicht geladen. Bitte das Spielinventar öffnen und erneut prüfen.'};
+    }
+    const counts = {};
+    for (const id of rawIds) {
+      const value = bag.getItemCount(Number(id));
+      // Never turn unavailable or malformed counts into a misleading zero.
+      if ((typeof value !== 'number' && typeof value !== 'string') ||
+          (typeof value === 'string' && !value.trim())) continue;
+      const count = Number(value);
+      if (Number.isSafeInteger(count) && count >= 0) counts[id] = count;
+    }
+    const complete = rawIds.every(id => Object.hasOwn(counts,id));
+    return {state:complete ? 'ready' : 'partial',counts,
+      message:complete ?
+        'Inventar verbunden · Rohmaterialmengen werden bei geöffnetem Rechner automatisch abgeglichen.' :
+        'Inventar teilweise lesbar · unbekannte Mengen erscheinen als —, nicht als 0.'};
+  } catch {
+    return {state:'error',counts:{},
+      message:'Inventarzugriff nicht möglich. Bitte Spielinventar öffnen und erneut prüfen.'};
+  }
+}
+function stockRequirement(id,required,stock) {
+  const owned = stock.counts[id];
+  if (!Number.isSafeInteger(owned) || owned < 0) return {owned:null,missing:null};
+  return {owned,missing:Math.max(0,required-owned)};
+}
+function stockTable(materials,stock) {
+  const wrap = element('div',undefined,results);
+  wrap.className = 'wrap';
+  const t = element('table',undefined,wrap);
+  const h = element('thead',undefined,t);
+  const hr = element('tr',undefined,h);
+  ['Rohmaterial','Benötigt','Vorhanden','Fehlt'].forEach(label => element('th',label,hr));
+  const body = element('tbody',undefined,t);
+  let missingValue = 0, missingTypes = 0, unknown = false;
+  Object.entries(materials).sort((a,b) =>
+    items[a[0]].name.localeCompare(items[b[0]].name,'de')
+  ).forEach(([id,required]) => {
+    const {owned,missing} = stockRequirement(id,required,stock);
+    const row = element('tr',undefined,body);
+    element('td',items[id].name,row);
+    [fmt(required),owned === null ? '—' : fmt(owned),
+      missing === null ? '—' : fmt(missing)].forEach(value =>
+      element('td',value,row).className = 'num'
+    );
+    if (missing === null) unknown = true;
+    else {
+      missingValue += missing*items[id].price;
+      if (missing > 0) missingTypes++;
+    }
+  });
+  paragraph(unknown ?
+    'Fehlmengen noch nicht vollständig berechenbar: Inventarbestand nicht vollständig verfügbar.' :
+    (missingTypes ? missingTypes+' Materialarten fehlen · Händlerwert der Fehlmengen: '+money(missingValue) :
+      'Alle benötigten Rohmaterialien sind im Inventar vorhanden.'),
+    'summary');
+}
+// End inventory helpers.
+
 function table(materials,totalLabel) {
   const wrap = element('div',undefined,results);
   wrap.className = 'wrap';
@@ -528,6 +621,9 @@ function calculate(id,n) {
   return {raw,craft};
 }
 function update() {
+  const stock = inventorySnapshot();
+  inventorySignature = JSON.stringify(stock);
+  $('#inventory-status').textContent = stock.message;
   results.replaceChildren();
   const id = product.value, n = Number(quantity.value);
   if (!recipes[id]) {
@@ -546,7 +642,11 @@ function update() {
     ' · pro Herstellung: '+r.ingredients.map(([key,c]) =>
       c+' × '+items[key].name
     ).join(' + ')+' → 1 × '+items[id].name);
-  heading('Rohmaterialien · sammeln oder kaufen');
+  heading('Rohmaterialien · benötigt, vorhanden und fehlend');
+  stockTable(data.raw,stock);
+  paragraph('Vergleich für den gesamten Auftrag: Jeder Rohmaterialbestand wird nur einmal angerechnet. '+
+    'Vorhandene hergestellte Vorprodukte und Endprodukte werden hier nicht abgezogen.','note');
+  heading('Rohmaterialien · vollständiger Bedarf und Wert');
   const total = table(data.raw,'Rohmaterialtotal');
   paragraph('Rohmaterialwert gesamt: '+money(total)+
     ' · pro Stück: '+(n ? money(total/n) : '—'),'summary');
@@ -598,7 +698,8 @@ function update() {
     'Vorprodukte werden zwischen den Berufen weitergegeben. '+
     'Der Rohmaterialwert oben zählt alles nur einmal. '+
     'Ohne Rezeptkauf, Arbeitszeit und Handwerkerlohn. '+
-    'Vorhandene Inventarbestände werden nicht abgezogen.','note');
+    'Diese Herstellungs- und Berufstabellen zeigen den vollständigen Bedarf. '+
+    'Deine fehlenden Rohmaterialien stehen im Inventarvergleich oben.','note');
 }
 function filter(preferred=product.value) {
   const query = normal(search.value);
@@ -618,6 +719,16 @@ quantity.value = get('old-quantity',100);
 search.addEventListener('input',() => filter());
 product.addEventListener('change',update);
 quantity.addEventListener('input',update);
+$('#inventory-refresh').addEventListener('click',() => {
+  inventoryLoadRequested = false;
+  inventoryLoadError = false;
+  update();
+});
+setInterval(() => {
+  if (!panel.open || document.hidden) return;
+  const stock = inventorySnapshot();
+  if (JSON.stringify(stock) !== inventorySignature) update();
+},1500);
 filter(get('old-product','2737000'));
 })();
 
