@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         old Handwerksrechner
 // @namespace    thewest.handwerksrechner
-// @version      1.1.3
+// @version      1.1.4
 // @description  Handwerksrechner mit 164 Produkten und Berufstotalen.
 // @author       old
 // @match        https://*.the-west.de/game.php*
@@ -314,7 +314,8 @@ root.innerHTML = `
 [hidden]{display:none!important}
 button,input,select{font:inherit}
 button{cursor:pointer}
-#launcher{position:fixed;top:440px;right:4px;bottom:auto;width:40px;height:40px;padding:0;border:2px solid #a18450;border-radius:5px;background:linear-gradient(#695035,#302014);color:#fff2ce;font-size:14px;font-weight:bold;box-shadow:0 2px 5px #0009;z-index:2147483646}
+#launcher{position:fixed;top:440px;right:4px;bottom:auto;width:40px;height:40px;padding:0;border:2px solid #a18450;border-radius:5px;background:linear-gradient(#695035,#302014);color:#fff2ce;font-size:14px;font-weight:bold;box-shadow:0 2px 5px #0009;z-index:2147483646;touch-action:none;user-select:none;cursor:grab}
+#launcher.dragging{cursor:grabbing}
 dialog{width:min(1060px,calc(100vw - 24px));max-height:90vh;overflow:auto;padding:0;border:2px solid #755232;border-radius:10px;background:#fff9ed;color:#302416;font:16px/1.45 Arial,sans-serif}
 dialog::backdrop{background:#0007}
 header{position:sticky;top:0;z-index:2;display:flex;justify-content:space-between;align-items:center;gap:15px;padding:12px 20px;background:#513b27;color:#fff7e7}
@@ -337,7 +338,7 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 #message:not(:empty){padding:10px;background:#fff0dc;color:#763e12}
 footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#655744}
 </style>
-<button id="launcher" type="button" title="Handwerksrechner öffnen" aria-label="Handwerksrechner öffnen">HW</button>
+<button id="launcher" type="button" title="Handwerksrechner öffnen · zum Verschieben ziehen" aria-label="Handwerksrechner öffnen">HW</button>
 <dialog aria-label="old Handwerksrechner">
 <header><strong>old · The West Handwerksrechner</strong><button class="close" type="button">Schliessen</button></header>
 <main>
@@ -356,7 +357,7 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 <p class="note" id="coverage"></p>
 <p id="message" role="status"></p>
 <div id="results"></div>
-<footer>Version 1.1.3 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
+<footer>Version 1.1.4 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
 Niedrige Händler-Verkaufswerte, keine Marktpreise.
 Kein Zugriff auf Inventar oder Markt. Keine automatischen Spielaktionen.</footer>
 </main>
@@ -386,7 +387,79 @@ function open() {
   if (!panel.open) panel.showModal();
   search.focus();
 }
-$('#launcher').addEventListener('click',open);
+// Movable launcher: save only its position, never game or account data.
+const launcher = $('#launcher');
+let drag = null;
+let suppressClick = false;
+function placeLauncher(x,y) {
+  const width = launcher.offsetWidth || 40;
+  const height = launcher.offsetHeight || 40;
+  const position = {
+    x:Math.round(Math.max(0,Math.min(x,Math.max(0,window.innerWidth-width)))),
+    y:Math.round(Math.max(0,Math.min(y,Math.max(0,window.innerHeight-height))))
+  };
+  launcher.style.left = position.x+'px';
+  launcher.style.top = position.y+'px';
+  launcher.style.right = 'auto';
+  launcher.style.bottom = 'auto';
+  return position;
+}
+const storedPosition = get('old-launcher-position',null);
+const initialRect = launcher.getBoundingClientRect();
+if (storedPosition && Number.isFinite(storedPosition.x) && Number.isFinite(storedPosition.y)) {
+  placeLauncher(storedPosition.x,storedPosition.y);
+} else {
+  placeLauncher(initialRect.left,initialRect.top);
+}
+launcher.addEventListener('pointerdown',event => {
+  if (event.button !== 0 || !event.isPrimary) return;
+  event.stopPropagation();
+  suppressClick = false;
+  const rect = launcher.getBoundingClientRect();
+  drag = {id:event.pointerId,x:event.clientX,y:event.clientY,left:rect.left,top:rect.top,moved:false};
+  launcher.setPointerCapture(event.pointerId);
+});
+launcher.addEventListener('pointermove',event => {
+  if (!drag || event.pointerId !== drag.id) return;
+  event.stopPropagation();
+  const dx = event.clientX-drag.x, dy = event.clientY-drag.y;
+  if (!drag.moved && Math.hypot(dx,dy) < 5) return;
+  drag.moved = true;
+  suppressClick = true;
+  launcher.classList.add('dragging');
+  placeLauncher(drag.left+dx,drag.top+dy);
+});
+function finishDrag(event) {
+  if (!drag || event.pointerId !== drag.id) return;
+  event.stopPropagation();
+  const completed = drag;
+  drag = null;
+  launcher.classList.remove('dragging');
+  if (completed.moved) {
+    const rect = launcher.getBoundingClientRect();
+    save('old-launcher-position',placeLauncher(rect.left,rect.top));
+  }
+  if (launcher.hasPointerCapture(event.pointerId)) launcher.releasePointerCapture(event.pointerId);
+}
+['pointerup','pointercancel','lostpointercapture'].forEach(type =>
+  launcher.addEventListener(type,finishDrag)
+);
+launcher.addEventListener('click',event => {
+  event.stopPropagation();
+  if (suppressClick && event.detail !== 0) {
+    event.preventDefault();
+    suppressClick = false;
+    return;
+  }
+  suppressClick = false;
+  open();
+});
+window.addEventListener('resize',() => {
+  const rect = launcher.getBoundingClientRect();
+  const position = placeLauncher(rect.left,rect.top);
+  save('old-launcher-position',position);
+});
+// End movable launcher.
 $('.close').addEventListener('click',() => panel.close());
 panel.addEventListener('close',() => $('#launcher').focus());
 ['keydown','keyup','keypress'].forEach(type =>
