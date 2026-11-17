@@ -1,9 +1,16 @@
 // ==UserScript==
 // @name         old Handwerksrechner
 // @namespace    thewest.handwerksrechner
-// @version      1.2.4
+// @version      1.3.0
 // @description  Handwerksrechner mit automatischem Rohmaterial-Inventarvergleich und Berufstotalen.
 // @author       old
+// @homepageURL  https://github.com/OldZio/the-west-handwerksrechner
+// @downloadURL  none
+// @connect      raw.githubusercontent.com
+// old-change: Updatehinweis mit Änderungsliste, Installation auf Wunsch und Später-Schaltfläche.
+// old-change: Updates beim Öffnen von The West prüfen; zusätzlich manuell im Rechner.
+// old-change: Zahlen linksbündig; Total-Spalten und Händlerwert der Fehlmengen ausgeblendet.
+// old-change: Verschiebbarer HW-Button mit gespeicherten Abständen zum oberen und rechten Rand.
 // @match        https://*.the-west.de/game.php*
 // @match        https://*.thewest.de/game.php*
 // @run-at       document-idle
@@ -12,6 +19,8 @@
 // @grant        GM_setValue
 // @grant        unsafeWindow
 // @grant        GM_registerMenuCommand
+// @grant        GM_xmlhttpRequest
+// @grant        GM_openInTab
 // ==/UserScript==
 
 (function () {
@@ -339,12 +348,22 @@ td.num{text-align:left;font-variant-numeric:tabular-nums}
 .summary{padding:14px;background:#f1e5cf;border:1px solid #caba9e;border-radius:6px;font-weight:bold}
 #message:not(:empty){padding:10px;background:#fff0dc;color:#763e12}
 footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#655744}
+#update-notice{position:fixed;left:16px;bottom:16px;z-index:2147483647;width:min(440px,calc(100vw - 32px));max-height:70vh;overflow:auto;padding:16px;background:#fff9ed;color:#302416;border:2px solid #755232;border-radius:8px;box-shadow:0 4px 18px #0006;font:15px/1.45 Arial,sans-serif}
+#update-notice.in-panel{position:static;width:100%;max-height:none;margin:0 0 18px;box-shadow:none}
+#update-title{font-size:19px}
+#update-changes{padding-left:22px;margin:10px 0}
+#update-notice button,#update-check{padding:7px 10px;border:1px solid #a99275;border-radius:5px;background:#f1e5cf;color:#302416}
+#update-install{font-weight:bold}
+.update-actions{display:flex;gap:8px;flex-wrap:wrap}
+#update-status{display:block;margin:8px 0}
+#update-notice a{color:#704618}
 </style>
 <button id="launcher" type="button" title="Handwerksrechner öffnen · zum Verschieben ziehen" aria-label="Handwerksrechner öffnen">HW</button>
 <dialog aria-label="old Handwerksrechner">
-<header><strong>old · The West Handwerksrechner · 1.2.4</strong><button class="close" type="button">Schliessen</button></header>
+<header><strong>old · The West Handwerksrechner · 1.3.0</strong><button class="close" type="button">Schliessen</button></header>
 <main>
 <h2>The West · Produktrechner</h2>
+<div id="update-slot"></div>
 <div class="controls">
 <label>Produkt suchen
 <input id="search" type="search" placeholder="z. B. toma, Honig oder Papier" autocomplete="off">
@@ -361,12 +380,26 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 <button id="inventory-refresh" type="button">Inventar erneut prüfen</button>
 <p id="message" role="status"></p>
 <div id="results"></div>
-<footer>Version 1.2.4 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
+<footer>Version 1.3.0 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
 Niedrige Händler-Verkaufswerte, keine Marktpreise.
 Liest Rohmaterialmengen aus dem Spielinventar. Kein Marktzugriff, kein Kauf und keine Herstellung.
-Inventarmengen werden weder dauerhaft gespeichert noch an Dritte gesendet.</footer>
+Inventarmengen werden weder dauerhaft gespeichert noch an Dritte gesendet.
+<p>Die Updateprüfung ruft nur die öffentliche Scriptdatei von GitHub ab – ohne Inventar- oder Kontodaten.</p>
+<button id="update-check" type="button">Nach Updates suchen</button>
+<span id="update-status" role="status">Updateprüfung wird vorbereitet …</span></footer>
 </main>
 </dialog>
+<aside id="update-notice" hidden aria-labelledby="update-title" role="status">
+<strong id="update-title"></strong>
+<p id="update-current"></p>
+<ul id="update-changes"></ul>
+<div class="update-actions">
+<button id="update-install" type="button">Update installieren</button>
+<button id="update-later" type="button">Später</button>
+</div>
+<p class="note">„Später“ blendet diese Version für 24 Stunden aus. Manuell prüfen kannst du jederzeit.</p>
+<a href="https://raw.githubusercontent.com/OldZio/the-west-handwerksrechner/main/old.user.js" target="_blank" rel="noopener noreferrer">Installationslink öffnen</a>
+</aside>
 `;
 const $ = selector => root.querySelector(selector);
 const panel = $('dialog');
@@ -583,7 +616,7 @@ function stockTable(materials,stock) {
   const hr = element('tr',undefined,h);
   ['Rohmaterial','Benötigt','Vorhanden','Fehlt'].forEach(label => element('th',label,hr));
   const body = element('tbody',undefined,t);
-  let missingValue = 0, missingTypes = 0, unknown = false;
+  let missingTypes = 0, unknown = false;
   Object.entries(materials).sort((a,b) =>
     items[a[0]].name.localeCompare(items[b[0]].name,'de')
   ).forEach(([id,required]) => {
@@ -596,13 +629,12 @@ function stockTable(materials,stock) {
     );
     if (missing === null) unknown = true;
     else {
-      missingValue += missing*items[id].price;
       if (missing > 0) missingTypes++;
     }
   });
   paragraph(unknown ?
     'Fehlmengen noch nicht vollständig berechenbar: Inventarbestand nicht vollständig verfügbar.' :
-    (missingTypes ? missingTypes+' Materialarten fehlen · Händlerwert der Fehlmengen: '+money(missingValue) :
+    (missingTypes ? missingTypes+' Materialarten fehlen' :
       'Alle benötigten Rohmaterialien sind im Inventar vorhanden.'),
     'summary');
 }
@@ -751,6 +783,151 @@ function filter(preferred=product.value) {
     ' Produkten · Suchfeld leeren für die vollständige Liste.';
   update();
 }
+// BEGIN UPDATE CHECKER
+function installUpdateChecker() {
+  const currentVersion = '1.3.0';
+  const sourceURL = 'https://raw.githubusercontent.com/OldZio/the-west-handwerksrechner/main/old.user.js';
+  const notice = $('#update-notice');
+  const status = $('#update-status');
+  const checkButton = $('#update-check');
+  const installButton = $('#update-install');
+  const laterButton = $('#update-later');
+  let pending = null;
+  let checking = false;
+
+  function versionParts(value) {
+    if (typeof value !== 'string' || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(value)) return null;
+    return value.split('.').map(Number);
+  }
+  function newer(candidate,installed) {
+    const a = versionParts(candidate), b = versionParts(installed);
+    if (!a || !b) return false;
+    for (let i=0;i<3;i++) {
+      if (a[i] !== b[i]) return a[i] > b[i];
+    }
+    return false;
+  }
+  function parseRelease(text) {
+    if (typeof text !== 'string' || text.length > 512000) throw Error('Invalid script');
+    const match = text.match(/^\s*\/\/ ==UserScript==([\s\S]*?)\/\/ ==\/UserScript==/);
+    if (!match || match[1].length > 16000) throw Error('Invalid metadata');
+    const header = match[1];
+    const field = key => {
+      const values = [...header.matchAll(new RegExp('^//\\s*@'+key+'[ \\t]+([^\\r\\n]+)','gm'))];
+      if (values.length !== 1) throw Error('Missing or duplicate metadata');
+      return values[0][1].trim();
+    };
+    if (field('namespace') !== 'thewest.handwerksrechner' ||
+        field('name') !== 'old Handwerksrechner') throw Error('Wrong script');
+    const version = field('version');
+    if (!versionParts(version)) throw Error('Invalid version');
+    const changes = [...header.matchAll(/^\/\/\s*old-change:[ \t]*(.+)$/gm)]
+      .slice(0,20).map(m => m[1].trim().slice(0,600));
+    return {version,changes};
+  }
+  function placeNotice() {
+    const container = panel.open ? $('#update-slot') : root;
+    if (notice.parentNode !== container) container.appendChild(notice);
+    notice.classList.toggle('in-panel',panel.open);
+  }
+  function displayRelease(release) {
+    pending = release;
+    $('#update-title').textContent = 'Neue Version '+release.version+' verfügbar';
+    $('#update-current').textContent = 'Installiert: '+currentVersion+' · Änderungen der neuen Version:';
+    const list = $('#update-changes');
+    list.replaceChildren();
+    const changes = release.changes.length ? release.changes : ['Keine Änderungsbeschreibung hinterlegt.'];
+    changes.forEach(change => {
+      const li = document.createElement('li');
+      li.textContent = change;
+      list.appendChild(li);
+    });
+    installButton.disabled = false;
+    placeNotice();
+    notice.hidden = false;
+  }
+  function snoozed(version) {
+    const value = get('old-update-snooze',null);
+    return value && value.version === version && Number.isFinite(value.until) && Date.now() < value.until;
+  }
+  function check(manual=false) {
+    if (checking) return;
+    checking = true;
+    checkButton.disabled = true;
+    status.textContent = 'Suche nach Updates …';
+    let finished = false;
+    let request;
+    let watchdog;
+    function end(message) {
+      if (finished) return false;
+      finished = true;
+      clearTimeout(watchdog);
+      checking = false;
+      checkButton.disabled = false;
+      status.textContent = message;
+      return true;
+    }
+    function failed() {
+      end('Updateprüfung derzeit nicht möglich. Du kannst den Rechner weiter verwenden.');
+    }
+    // Independent timeout also covers managers where anonymous requests ignore timeout.
+    watchdog = setTimeout(() => {
+      if (end('Updateprüfung hat zu lange gedauert. Bitte später erneut prüfen.')) {
+        try { request?.abort(); } catch {}
+      }
+    },15000);
+    try {
+      request = GM_xmlhttpRequest({
+        method:'GET',url:sourceURL,anonymous:true,nocache:true,timeout:12000,
+        headers:{Accept:'text/plain'},
+        onload(response) {
+          if (finished) return;
+          try {
+            if (response.status !== 200) throw Error('HTTP error');
+            if (response.finalUrl) {
+              const url = new URL(response.finalUrl);
+              if (url.origin+url.pathname !== sourceURL) throw Error('Unexpected redirect');
+            }
+            const release = parseRelease(response.responseText);
+            if (newer(release.version,currentVersion)) {
+              end('Version '+release.version+' ist verfügbar.');
+              pending = release;
+              if (manual || !snoozed(release.version)) displayRelease(release);
+            } else {
+              end('Version '+currentVersion+' ist aktuell.');
+              pending = null;
+              notice.hidden = true;
+            }
+          } catch { failed(); }
+        },
+        onerror:failed,ontimeout:failed,onabort:failed
+      });
+    } catch { failed(); }
+  }
+  laterButton.addEventListener('click',() => {
+    if (pending) save('old-update-snooze',{version:pending.version,until:Date.now()+24*60*60*1000});
+    notice.hidden = true;
+  });
+  installButton.addEventListener('click',() => {
+    if (!pending || !newer(pending.version,currentVersion)) return;
+    try {
+      GM_openInTab(sourceURL,{active:true,insert:true});
+      status.textContent = 'Installation im neuen Tab bestätigen. Danach The West neu laden.';
+      $('#update-current').textContent = 'Bestätige das Update im Tampermonkey-Tab und lade danach The West neu.';
+    } catch {
+      status.textContent = 'Installation konnte nicht geöffnet werden. Bitte den Installationslink unten verwenden.';
+    }
+  });
+  checkButton.addEventListener('click',() => check(true));
+  try { GM_registerMenuCommand('Handwerksrechner: Updates prüfen',() => check(true)); } catch {}
+  new MutationObserver(placeNotice).observe(panel,{attributes:true,attributeFilter:['open']});
+  panel.addEventListener('close',placeNotice);
+  // Only check when the game is open, never on unrelated websites.
+  setTimeout(() => check(false),2500);
+  setInterval(() => { if (!document.hidden) check(false); },6*60*60*1000);
+}
+// END UPDATE CHECKER
+
 quantity.value = get('old-quantity',100);
 search.addEventListener('input',() => filter());
 product.addEventListener('change',update);
@@ -766,5 +943,6 @@ setInterval(() => {
   if (JSON.stringify(stock) !== inventorySignature) update();
 },1500);
 filter(get('old-product','2737000'));
+installUpdateChecker();
 })();
 
