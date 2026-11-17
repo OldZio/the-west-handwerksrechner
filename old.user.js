@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         old Handwerksrechner
 // @namespace    thewest.handwerksrechner
-// @version      1.2.0
+// @version      1.2.1
 // @description  Handwerksrechner mit automatischem Rohmaterial-Inventarvergleich und Berufstotalen.
 // @author       old
 // @match        https://*.the-west.de/game.php*
@@ -334,6 +334,7 @@ table{width:100%;border-collapse:collapse;font-size:15px;margin:8px 0}
 th,td{padding:9px;border-bottom:1px solid #dfd2bc;text-align:left;vertical-align:top}
 th,tfoot{background:#f1e5cf;font-weight:bold}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
+.stock-table td.num{text-align:left}
 .note{font-size:13px;color:#655744}
 .summary{padding:14px;background:#f1e5cf;border:1px solid #caba9e;border-radius:6px;font-weight:bold}
 #message:not(:empty){padding:10px;background:#fff0dc;color:#763e12}
@@ -360,7 +361,7 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 <button id="inventory-refresh" type="button">Inventar erneut prüfen</button>
 <p id="message" role="status"></p>
 <div id="results"></div>
-<footer>Version 1.2.0 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
+<footer>Version 1.2.1 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
 Niedrige Händler-Verkaufswerte, keine Marktpreise.
 Liest Rohmaterialmengen aus dem Spielinventar. Kein Marktzugriff, kein Kauf und keine Herstellung.
 Inventarmengen werden weder dauerhaft gespeichert noch an Dritte gesendet.</footer>
@@ -409,13 +410,34 @@ function placeLauncher(x,y) {
   launcher.style.bottom = 'auto';
   return position;
 }
+// Store a relative position in the available viewport, so resize/zoom never
+// overwrites the preferred location with temporary clamped pixel coordinates.
+function launcherRange() {
+  return {x:Math.max(0,window.innerWidth-(launcher.offsetWidth || 40)),
+    y:Math.max(0,window.innerHeight-(launcher.offsetHeight || 40))};
+}
+function relativePosition(x,y) {
+  const range = launcherRange();
+  return {rx:range.x ? Math.max(0,Math.min(1,x/range.x)) : 0.5,
+    ry:range.y ? Math.max(0,Math.min(1,y/range.y)) : 0.5};
+}
 const storedPosition = get('old-launcher-position',null);
 const initialRect = launcher.getBoundingClientRect();
-if (storedPosition && Number.isFinite(storedPosition.x) && Number.isFinite(storedPosition.y)) {
-  placeLauncher(storedPosition.x,storedPosition.y);
+let preferredPosition;
+if (storedPosition && Number.isFinite(storedPosition.rx) && Number.isFinite(storedPosition.ry)) {
+  preferredPosition = {rx:Math.max(0,Math.min(1,storedPosition.rx)),
+    ry:Math.max(0,Math.min(1,storedPosition.ry))};
+} else if (storedPosition && Number.isFinite(storedPosition.x) && Number.isFinite(storedPosition.y)) {
+  preferredPosition = relativePosition(storedPosition.x,storedPosition.y);
 } else {
-  placeLauncher(initialRect.left,initialRect.top);
+  preferredPosition = relativePosition(initialRect.left,initialRect.top);
 }
+function restoreLauncherPosition() {
+  const range = launcherRange();
+  placeLauncher(preferredPosition.rx*range.x,preferredPosition.ry*range.y);
+}
+restoreLauncherPosition();
+save('old-launcher-position',preferredPosition);
 launcher.addEventListener('pointerdown',event => {
   if (event.button !== 0 || !event.isPrimary) return;
   event.stopPropagation();
@@ -442,7 +464,9 @@ function finishDrag(event) {
   launcher.classList.remove('dragging');
   if (completed.moved) {
     const rect = launcher.getBoundingClientRect();
-    save('old-launcher-position',placeLauncher(rect.left,rect.top));
+    const position = placeLauncher(rect.left,rect.top);
+    preferredPosition = relativePosition(position.x,position.y);
+    save('old-launcher-position',preferredPosition);
   }
   if (launcher.hasPointerCapture(event.pointerId)) launcher.releasePointerCapture(event.pointerId);
 }
@@ -460,9 +484,14 @@ launcher.addEventListener('click',event => {
   open();
 });
 window.addEventListener('resize',() => {
-  const rect = launcher.getBoundingClientRect();
-  const position = placeLauncher(rect.left,rect.top);
-  save('old-launcher-position',position);
+  if (drag) {
+    const pointerId = drag.id;
+    drag = null;
+    suppressClick = true;
+    launcher.classList.remove('dragging');
+    if (launcher.hasPointerCapture(pointerId)) launcher.releasePointerCapture(pointerId);
+  }
+  restoreLauncherPosition();
 });
 // End movable launcher.
 $('.close').addEventListener('click',() => panel.close());
@@ -542,6 +571,7 @@ function stockTable(materials,stock) {
   const wrap = element('div',undefined,results);
   wrap.className = 'wrap';
   const t = element('table',undefined,wrap);
+  t.className = 'stock-table';
   const h = element('thead',undefined,t);
   const hr = element('tr',undefined,h);
   ['Rohmaterial','Benötigt','Vorhanden','Fehlt'].forEach(label => element('th',label,hr));
