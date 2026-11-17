@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         old Handwerksrechner
 // @namespace    thewest.handwerksrechner
-// @version      1.2.3
+// @version      1.2.4
 // @description  Handwerksrechner mit automatischem Rohmaterial-Inventarvergleich und Berufstotalen.
 // @author       old
 // @match        https://*.the-west.de/game.php*
@@ -342,7 +342,7 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 </style>
 <button id="launcher" type="button" title="Handwerksrechner öffnen · zum Verschieben ziehen" aria-label="Handwerksrechner öffnen">HW</button>
 <dialog aria-label="old Handwerksrechner">
-<header><strong>old · The West Handwerksrechner · 1.2.3</strong><button class="close" type="button">Schliessen</button></header>
+<header><strong>old · The West Handwerksrechner · 1.2.4</strong><button class="close" type="button">Schliessen</button></header>
 <main>
 <h2>The West · Produktrechner</h2>
 <div class="controls">
@@ -361,7 +361,7 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 <button id="inventory-refresh" type="button">Inventar erneut prüfen</button>
 <p id="message" role="status"></p>
 <div id="results"></div>
-<footer>Version 1.2.3 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
+<footer>Version 1.2.4 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
 Niedrige Händler-Verkaufswerte, keine Marktpreise.
 Liest Rohmaterialmengen aus dem Spielinventar. Kein Marktzugriff, kein Kauf und keine Herstellung.
 Inventarmengen werden weder dauerhaft gespeichert noch an Dritte gesendet.</footer>
@@ -614,7 +614,7 @@ function table(materials,totalLabel) {
   const t = element('table',undefined,wrap);
   const h = element('thead',undefined,t);
   const hr = element('tr',undefined,h);
-  ['Material / Herkunft','Menge','Preis/Stück','Total'].forEach(s =>
+  ['Material / Herkunft','Menge','Preis/Stück'].forEach(s =>
     element('th',s,hr)
   );
   const body = element('tbody',undefined,t);
@@ -627,7 +627,7 @@ function table(materials,totalLabel) {
     count += n;
     const row = element('tr',undefined,body);
     element('td',items[id].name+' · '+(recipes[id]?.job || 'Rohmaterial'),row);
-    [fmt(n),money(items[id].price),money(value)].forEach(s => {
+    [fmt(n),money(items[id].price)].forEach(s => {
       element('td',s,row).className = 'num';
     });
   });
@@ -636,7 +636,6 @@ function table(materials,totalLabel) {
   element('td',totalLabel,row);
   element('td',fmt(count)+' Stück',row).className = 'num';
   element('td','',row);
-  element('td',money(total),row).className = 'num';
   return total;
 }
 function calculate(id,n) {
