@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         old Handwerksrechner
 // @namespace    thewest.handwerksrechner
-// @version      1.2.1
+// @version      1.2.3
 // @description  Handwerksrechner mit automatischem Rohmaterial-Inventarvergleich und Berufstotalen.
 // @author       old
 // @match        https://*.the-west.de/game.php*
@@ -333,7 +333,7 @@ select{margin-top:8px}
 table{width:100%;border-collapse:collapse;font-size:15px;margin:8px 0}
 th,td{padding:9px;border-bottom:1px solid #dfd2bc;text-align:left;vertical-align:top}
 th,tfoot{background:#f1e5cf;font-weight:bold}
-td.num{text-align:right;font-variant-numeric:tabular-nums}
+td.num{text-align:left;font-variant-numeric:tabular-nums}
 .stock-table td.num{text-align:left}
 .note{font-size:13px;color:#655744}
 .summary{padding:14px;background:#f1e5cf;border:1px solid #caba9e;border-radius:6px;font-weight:bold}
@@ -342,7 +342,7 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 </style>
 <button id="launcher" type="button" title="Handwerksrechner öffnen · zum Verschieben ziehen" aria-label="Handwerksrechner öffnen">HW</button>
 <dialog aria-label="old Handwerksrechner">
-<header><strong>old · The West Handwerksrechner</strong><button class="close" type="button">Schliessen</button></header>
+<header><strong>old · The West Handwerksrechner · 1.2.3</strong><button class="close" type="button">Schliessen</button></header>
 <main>
 <h2>The West · Produktrechner</h2>
 <div class="controls">
@@ -361,7 +361,7 @@ footer{border-top:1px solid #dfd2bc;padding-top:15px;font-size:13px;color:#65574
 <button id="inventory-refresh" type="button">Inventar erneut prüfen</button>
 <p id="message" role="status"></p>
 <div id="results"></div>
-<footer>Version 1.2.1 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
+<footer>Version 1.2.3 · Rezeptdaten aus dem bisherigen Script, Stand 15.11.2026 (TW-DB.info).
 Niedrige Händler-Verkaufswerte, keine Marktpreise.
 Liest Rohmaterialmengen aus dem Spielinventar. Kein Marktzugriff, kein Kauf und keine Herstellung.
 Inventarmengen werden weder dauerhaft gespeichert noch an Dritte gesendet.</footer>
@@ -410,31 +410,37 @@ function placeLauncher(x,y) {
   launcher.style.bottom = 'auto';
   return position;
 }
-// Store a relative position in the available viewport, so resize/zoom never
-// overwrites the preferred location with temporary clamped pixel coordinates.
+// Keep fixed CSS-pixel distances to the same edges as the upper-right game UI.
+// Resize may clamp the visible button, but never changes its saved offsets.
 function launcherRange() {
   return {x:Math.max(0,window.innerWidth-(launcher.offsetWidth || 40)),
     y:Math.max(0,window.innerHeight-(launcher.offsetHeight || 40))};
 }
-function relativePosition(x,y) {
+function edgePosition(x,y) {
   const range = launcherRange();
-  return {rx:range.x ? Math.max(0,Math.min(1,x/range.x)) : 0.5,
-    ry:range.y ? Math.max(0,Math.min(1,y/range.y)) : 0.5};
+  return {right:Math.max(0,range.x-x),top:Math.max(0,y)};
 }
 const storedPosition = get('old-launcher-position',null);
 const initialRect = launcher.getBoundingClientRect();
 let preferredPosition;
-if (storedPosition && Number.isFinite(storedPosition.rx) && Number.isFinite(storedPosition.ry)) {
-  preferredPosition = {rx:Math.max(0,Math.min(1,storedPosition.rx)),
-    ry:Math.max(0,Math.min(1,storedPosition.ry))};
+if (storedPosition && Number.isFinite(storedPosition.right) && Number.isFinite(storedPosition.top)) {
+  preferredPosition = {right:Math.max(0,storedPosition.right),top:Math.max(0,storedPosition.top)};
+} else if (storedPosition && Number.isFinite(storedPosition.rx) && Number.isFinite(storedPosition.ry)) {
+  const range = launcherRange();
+  preferredPosition = edgePosition(
+    Math.max(0,Math.min(1,storedPosition.rx))*range.x,
+    Math.max(0,Math.min(1,storedPosition.ry))*range.y);
 } else if (storedPosition && Number.isFinite(storedPosition.x) && Number.isFinite(storedPosition.y)) {
-  preferredPosition = relativePosition(storedPosition.x,storedPosition.y);
+  preferredPosition = edgePosition(storedPosition.x,storedPosition.y);
 } else {
-  preferredPosition = relativePosition(initialRect.left,initialRect.top);
+  preferredPosition = edgePosition(initialRect.left,initialRect.top);
 }
 function restoreLauncherPosition() {
   const range = launcherRange();
-  placeLauncher(preferredPosition.rx*range.x,preferredPosition.ry*range.y);
+  launcher.style.left = 'auto';
+  launcher.style.right = Math.min(preferredPosition.right,range.x)+'px';
+  launcher.style.top = Math.min(preferredPosition.top,range.y)+'px';
+  launcher.style.bottom = 'auto';
 }
 restoreLauncherPosition();
 save('old-launcher-position',preferredPosition);
@@ -465,7 +471,8 @@ function finishDrag(event) {
   if (completed.moved) {
     const rect = launcher.getBoundingClientRect();
     const position = placeLauncher(rect.left,rect.top);
-    preferredPosition = relativePosition(position.x,position.y);
+    preferredPosition = edgePosition(position.x,position.y);
+    restoreLauncherPosition();
     save('old-launcher-position',preferredPosition);
   }
   if (launcher.hasPointerCapture(event.pointerId)) launcher.releasePointerCapture(event.pointerId);
